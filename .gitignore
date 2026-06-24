@@ -1,0 +1,22 @@
+# Project config / AI instructions
+CLAUDE.md
+GEMINI.md
+AGENTS.md
+.claude/
+
+# macOS
+.DS_Store
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+.env
+venv/
+.venv/
+
+# Data outputs (raw pulls, may contain stale snapshots)
+data/
+
+# Jupyter
+.ipynb_checkpoints/
