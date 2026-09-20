@@ -14,6 +14,7 @@ weekly series the offset is negligible.
 """
 
 import json
+import os
 import sys
 import urllib.request
 from datetime import datetime, timezone, timedelta
@@ -31,7 +32,15 @@ DATA_DIR = Path(__file__).parent / "data"
 # Start a few weeks before first ATM issuance row (Nov 2024) so the first
 # weekly return calc has a prior close to diff against.
 START_DATE = datetime(2024, 10, 14, tzinfo=timezone.utc)   # ~4 weeks buffer
-END_DATE   = datetime(2026, 6, 24, tzinfo=timezone.utc)    # today
+
+# Through today by default. Override with PRICE_END_DATE=YYYY-MM-DD to pin a
+# snapshot, which is what you want when reproducing a specific set of results.
+_end_override = os.environ.get("PRICE_END_DATE")
+END_DATE = (
+    datetime.strptime(_end_override, "%Y-%m-%d").replace(tzinfo=timezone.utc)
+    if _end_override
+    else datetime.now(timezone.utc)
+)
 
 
 # ---------------------------------------------------------------------------

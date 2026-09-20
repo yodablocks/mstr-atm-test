@@ -13,8 +13,8 @@ Usage:
 Output:
     data/atm_issuance_raw.csv
 
-EDGAR requires a real User-Agent with a contact email. Set yours below
-before running, or pass via EDGAR_USER_AGENT env var.
+EDGAR requires a real User-Agent with a contact email. Set EDGAR_USER_AGENT
+before running; there is no default and the script exits without it.
 """
 
 import csv
@@ -32,11 +32,16 @@ CIK = "0001050446"  # Strategy Inc / MicroStrategy
 SUBMISSIONS_URL = f"https://data.sec.gov/submissions/CIK{CIK}.json"
 ARCHIVE_BASE = f"https://www.sec.gov/Archives/edgar/data/{int(CIK)}"
 
-# EDGAR will reject requests without a real contact email in the User-Agent.
-USER_AGENT = os.environ.get(
-    "EDGAR_USER_AGENT",
-    "marc-research-project contact@example.com",  # <-- replace with your email
-)
+# SEC fair-access policy requires a real contact in the User-Agent. Sending a
+# placeholder is worse than failing: it gets the whole IP range throttled and
+# gives SEC no way to reach whoever is generating the traffic. So: no default.
+USER_AGENT = os.environ.get("EDGAR_USER_AGENT")
+if not USER_AGENT or "example.com" in USER_AGENT:
+    sys.exit(
+        "[ERROR] EDGAR_USER_AGENT is not set to a real contact.\n"
+        "        SEC requires a User-Agent identifying who is making the request.\n"
+        '        export EDGAR_USER_AGENT="Your Name your@email.com"'
+    )
 
 OUTPUT_PATH = Path(__file__).parent / "data" / "atm_issuance_raw.csv"
 
