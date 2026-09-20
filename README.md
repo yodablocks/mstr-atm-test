@@ -48,7 +48,7 @@ Three passes over substantially the same question:
   77 weeks, return window misaligned by one day   -1.16% per $1B
   77 weeks, window corrected                      +0.37% per $1B
   89 weeks, window corrected                      -0.70% per $1B
-  87 weeks, two volatile June weeks excluded      +0.34% per $1B
+  87 weeks, two largest-residual weeks excluded   +0.28% per $1B
 ```
 
 All four are the joint estimator, so they are directly comparable.
@@ -70,19 +70,21 @@ Extending the sample from 77 to 89 weeks did not improve power:
   minimum detectable    2.70%       3.04%
 ```
 
-This is not a misspecified hedge. BTC-beta is stable across the break: 1.373
-on the first 77 weeks, 1.387 on the new 12, 1.374 on all 89. A rolling beta
-would not recover the lost power.
+This is not a misspecified hedge. Splitting the sample in half gives a
+BTC-beta of 1.490 then 1.309 against 1.374 on the full sample, and a test for
+a beta shift returns p = 0.436. Residual SD over the same halves goes 4.97%
+to 6.96%. Volatility rose; the hedge did not break. A rolling beta would not
+recover the lost power.
 
-It is also not uniform. Two consecutive weeks in late June 2026 carry most of
-it, with residuals of -20.4% and +19.2%. Excluding those two, the remaining
-ten new weeks have a residual SD of 6.46% and the minimum detectable effect
-returns to 2.73%, essentially where it was.
+It is also not uniform. Two weeks carry a large share of it, 2026-04-13 at
++21.9% abnormal and 2026-06-22 at -20.4%. Excluding just those two, residual
+SD falls to 5.17% and the minimum detectable effect returns to 2.65%, better
+than it was at 77 weeks.
 
-So the precise claim is narrower than "the market got noisier": a single
-volatile fortnight erased the power that twelve weeks of data bought. That is
-the durable problem. Power improves only as the square root of n, so at this
-residual volatility:
+So the precise claim is narrower than "the market got noisier": two weeks out
+of eighty-nine erased the power that twelve weeks of data bought, and flipped
+the sign of the point estimate on the way. That is the durable problem. Power
+improves only as the square root of n, so at this residual volatility:
 
 ```
   to reach MDE 2.0% per $1B     206 weeks    (~4 years)

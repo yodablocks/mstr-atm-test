@@ -158,6 +158,7 @@ def main():
     _section("a. BTC-beta regression (MSTR ~ BTC)")
     print(f"  n = {n} weeks (incl. zero-issuance weeks)")
     _, r2_btc = _ols(mstr_ret, btc_ret, "MSTR ~ BTC", as_pct=False)
+    r2_btc_slope = sm.OLS(mstr_ret, sm.add_constant(btc_ret)).fit().params[1]
     resid_all = sm.OLS(mstr_ret, sm.add_constant(btc_ret)).fit().resid
     df["abnormal_return"] = resid_all
 
@@ -352,6 +353,52 @@ def main():
     print()
     print(f"  'No detectable relationship' is therefore the correct reading.")
     print(f"  'No relationship' is not supported by these data.")
+
+    # -- Is the noise a misfit hedge, or real volatility? -------------------
+    # If BTC-beta drifted, the "residual" would be partly misspecification and
+    # a rolling beta would recover power. If beta is stable, the noise is real.
+    half = n // 2
+    b1 = sm.OLS(mstr_ret[:half], sm.add_constant(btc_ret[:half])).fit().params[1]
+    b2 = sm.OLS(mstr_ret[half:], sm.add_constant(btc_ret[half:])).fit().params[1]
+    late = np.zeros(n); late[half:] = 1.0
+    chow = sm.OLS(
+        mstr_ret,
+        sm.add_constant(np.column_stack([btc_ret, late, btc_ret * late])),
+    ).fit()
+    p_interact = chow.pvalues[3]
+    print()
+    print(f"  BTC-beta by half: {b1:.3f} then {b2:.3f} "
+          f"(full sample {r2_btc_slope:.3f})")
+    print(f"  Test for a beta shift (btc x late-half interaction): "
+          f"p={p_interact:.3f}")
+    sd1 = abnormal[:half].std(ddof=1)
+    sd2 = abnormal[half:].std(ddof=1)
+    print(f"  Residual SD by half: {sd1*100:.2f}% then {sd2*100:.2f}%")
+    if p_interact > 0.05:
+        print(f"  No evidence of a beta shift, so the rise in residual volatility")
+        print(f"  is real rather than a misspecified hedge. A rolling beta would")
+        print(f"  not recover the lost power.")
+    else:
+        print(f"  Beta appears to shift. Part of the 'residual' is then")
+        print(f"  misspecification, and a rolling beta may recover some power.")
+
+    # -- How concentrated is that volatility? -------------------------------
+    worst = np.argsort(-np.abs(abnormal))[:2]
+    keep = np.ones(n, dtype=bool)
+    keep[worst] = False
+    j2 = sm.OLS(mstr_ret[keep],
+                sm.add_constant(np.column_stack([btc_ret[keep], issuance[keep]]))).fit()
+    mde2 = _mde(j2.bse[2])
+    print()
+    print(f"  Two largest-residual weeks:")
+    for i in worst:
+        print(f"    {df.iloc[i]['window_start']}: abnormal "
+              f"{abnormal[i]*100:+.1f}%")
+    print(f"  Excluding just those two (n={int(keep.sum())}): residual SD "
+          f"{abnormal[keep].std(ddof=1)*100:.2f}%, MDE {mde2*100:.2f}% per $1B,")
+    print(f"  slope {j2.params[2]*100:+.3f}% per $1B (p={j2.pvalues[2]:.3f}).")
+    print(f"  Two weeks out of {n} move the MDE by "
+          f"{abs(mde - mde2)*100:.2f} points and flip the sign of the estimate.")
 
     # MDE shrinks as 1/sqrt(n), so the weeks needed to reach a target scale
     # with the square of the improvement factor.
