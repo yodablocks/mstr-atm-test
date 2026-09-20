@@ -3,10 +3,16 @@ analysis.py -- replicate and stress-test Abishek Kannan's MSTR ATM analysis.
 
 Steps:
   a. OLS: MSTR weekly return ~ BTC weekly return. Residual = abnormal return.
-  b. OLS: abnormal return ~ issuance $. Baseline R^2 target ~0.49.
+  b. Issuance effect, from the joint regression below. The two-stage version
+     the original design implies is reported alongside it for comparison,
+     as is the attempt to reproduce the original's 0.49.
   c. Spearman rank correlation: abnormal return vs issuance $.
-  d. MAD outlier flagging on issuance $. Re-run (b) and (c) excluding outliers.
+  d. Robustness to the skewed issuance distribution: Huber M-estimation,
+     log1p, and winsorization, all retaining every row. MAD-based deletion
+     is reported as a diagnostic only, never as evidence.
   e. Lead-lag: issuance(t) vs abnormal_return(t-1), (t), (t+1).
+  f. Power: the minimum effect this design could have detected, and the
+     confidence interval that follows from it.
 
 Estimator note: the headline issuance coefficient comes from the JOINT
 regression
@@ -35,9 +41,11 @@ WEEKLY_PATH = Path("data/weekly.csv")
 
 MAD_K = 3.0  # outlier threshold: k * MAD from median (diagnostic only, see section d)
 
-# Hypothesis tests reported below, counted by section:
-#   a: 1   b: 4   c: 2   d: 5   e: 9  (3 lags x {OLS, 2 Spearman})
-N_TESTS = 21
+# Issuance-related hypothesis tests reported below, counted by section:
+#   b: 4   c: 2   d: 5   e: 9  (3 lags x {OLS, 2 Spearman})
+# Section a (MSTR ~ BTC) is excluded: it is the hedge specification, not a
+# test of the issuance question, and it is significant at any threshold.
+N_TESTS = 20
 
 ALPHA = 0.05   # two-sided significance level for power calculations
 POWER = 0.80   # conventional target power
@@ -318,9 +326,13 @@ def main():
     print()
     print(f"  Point estimate {slope_joint*100:+.3f}% per $1B, 95% CI "
           f"[{ci_joint[0]*100:+.3f}%, {ci_joint[1]*100:+.3f}%].")
-    print(f"  So the sample RULES OUT a price impact larger than about "
-          f"{max(abs(ci_joint[0]), abs(ci_joint[1]))*100:.1f}% per $1B,")
-    print(f"  and says nothing either way about anything smaller. With n={n} weeks")
+    print(f"  The interval is asymmetric, so the two bounds answer different")
+    print(f"  questions and should be quoted separately:")
+    print(f"    negative price impact worse than {ci_joint[0]*100:.2f}% per $1B: ruled out")
+    print(f"    positive effect larger than  {ci_joint[1]*100:+.2f}% per $1B: ruled out")
+    print(f"  Selling pressure predicts a negative sign, so {ci_joint[0]*100:.2f}% is the")
+    print(f"  bound that matters for the question being asked.")
+    print(f"  Anything inside the interval is untestable here. With n={n} weeks""")
     print(f"  and weekly residual noise of {resid_sd*100:.1f}%, a true effect anywhere")
     print(f"  below {mde*100:.1f}% per $1B would fail to reject zero most of the time,")
     print(f"  so a null result here is the expected outcome under a wide range of")
@@ -333,13 +345,15 @@ def main():
     # Multiple comparisons
     # -----------------------------------------------------------------------
     _section("Multiple comparisons")
-    print(f"  This script reports roughly {N_TESTS} hypothesis tests on one dataset.")
+    print(f"  {N_TESTS} issuance-related hypothesis tests on one dataset.")
+    print(f"  (The BTC-beta regression in section a is excluded: it is the hedge")
+    print(f"   specification, not a test of the issuance question.)")
     print(f"  At alpha=0.05 the expected number of spurious rejections is "
           f"{N_TESTS * 0.05:.1f}.")
     print(f"  Bonferroni-adjusted threshold: p < {0.05 / N_TESTS:.4f}.")
-    print(f"  Nothing reported above clears that, and nothing reported above")
-    print(f"  clears an unadjusted 0.05 either. Treat any single p near 0.10 as")
-    print(f"  noise unless it survives a pre-registered re-test on new weeks.")
+    print(f"  No issuance test above clears that, and none clears an unadjusted")
+    print(f"  0.05 either. Treat any single p near 0.10 as noise unless it")
+    print(f"  survives a pre-registered re-test on new weeks.")
 
     # -----------------------------------------------------------------------
     # Data gap note

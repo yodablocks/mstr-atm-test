@@ -26,14 +26,17 @@ Joint regression, mstr_return ~ btc_return + issuance, n = 77 weeks
   minimum detectable effect at 80% power:  2.70% per $1B
 ```
 
-The confidence interval contains price impacts up to about 2.3% per $1B in
-either direction. That is not a small number. The honest statement is:
+The interval is asymmetric, so its two ends answer different questions:
 
-- The data **rule out** a contemporaneous price impact larger than roughly
-  2.3% per $1B issued.
-- The data **say nothing** about any effect smaller than that, because the
-  design cannot detect one. A true effect below 2.70% per $1B fails to reject
-  zero most of the time at n = 77.
+- A negative price impact **worse than -1.56% per $1B** is ruled out. Selling
+  pressure predicts a negative sign, so this is the bound that matters for
+  the question being asked.
+- A positive effect **larger than +2.29% per $1B** is ruled out.
+- Anything inside that interval is untestable here. A true effect below
+  2.70% per $1B fails to reject zero most of the time at n = 77.
+
+A 1.5% abnormal return per $1B issued is not a small effect, and this sample
+cannot distinguish it from nothing.
 
 So "no detectable relationship" is correct. "No relationship" is not
 supported. A null result here is the expected outcome across a wide range of
@@ -124,10 +127,12 @@ Nothing significant. The mildly suggestive one is lag -1, and its sign points
 the wrong way for price impact: strong abnormal returns *precede* larger
 issuance. That is the endogeneity channel, not an effect of selling.
 
-**Multiple comparisons.** This script runs 21 tests on one dataset, so
-roughly one spurious p < 0.05 is expected by chance. The Bonferroni threshold
-is p < 0.0023. Nothing above clears that, and nothing above clears an
-unadjusted 0.05 either.
+**Multiple comparisons.** This script runs 20 issuance-related tests on one
+dataset, so roughly one spurious p < 0.05 is expected by chance. The
+Bonferroni threshold is p < 0.0025. No issuance test clears that, and none
+clears an unadjusted 0.05 either. The BTC-beta regression in section a is
+excluded from the count: it is the hedge specification rather than a test of
+the issuance question, and it is significant at any threshold.
 
 ---
 
@@ -180,7 +185,8 @@ network access.
 
 ## Known limitations
 
-- **Power, as above.** Effects below 2.70% per $1B are undetectable here.
+- **Power, as above.** Effects below 2.70% per $1B in magnitude are
+  undetectable here.
   This is the binding constraint on everything the repo can conclude.
 - **Endogeneity, as above.** Issuance is not randomly assigned.
 - ATM window dates are not always calendar-week aligned. The filing's own
@@ -208,9 +214,9 @@ BTC-beta, contemporaneously or at a one-week lag, with or without robust
 handling of the skew.
 
 That is a weaker claim than "dead," and it is the one the data support. The
-sample rules out a weekly price impact above roughly 2.3% per $1B. Below
-that, this test has nothing to say, and no amount of additional robustness
-checks on the same 77 weeks will change that, because the limit is
+sample rules out a weekly price impact worse than -1.56% per $1B. Below that
+threshold this test has nothing to say, and no amount of additional
+robustness checking on the same 77 weeks will change it, because the limit is
 statistical power rather than method choice.
 
 If the question is worth settling, the next step is not another test on this

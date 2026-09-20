@@ -15,8 +15,10 @@ __pycache__/
 venv/
 .venv/
 
-# Data outputs (raw pulls, may contain stale snapshots)
-data/
+# Data outputs (raw pulls, may contain stale snapshots).
+# data/* rather than data/, because git will not re-include a file whose
+# parent DIRECTORY is excluded, which would make the negation below a no-op.
+data/*
 
 # ...except the built weekly panel, so analysis.py runs on a fresh clone with
 # no network access. It is 80 rows and it is the input every result depends on.
