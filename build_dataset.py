@@ -6,12 +6,32 @@ NOT standard ISO weeks. Filings disclose irregular windows (mostly 7 days,
 sometimes 2-3 around quarter/year-end), so returns are computed over the
 actual disclosed period.
 
-Returns: (close_end - close_start) / close_start  (arithmetic, not log)
+Return window alignment
+-----------------------
+The disclosed window is inclusive of its first day: a "June 1 to June 7"
+filing covers selling that happened ON June 1. The return that spans that
+selling therefore runs from the close BEFORE the window opens to the close
+at the window's end:
 
-MSTR: equity, closed on weekends/holidays. If window_start or window_end
-      falls on a non-trading day, use the nearest prior trading day's close.
-      Flag these substitutions.
-BTC:  trades every day. Exact date lookups -- no fallback needed.
+    start price = last trading close STRICTLY BEFORE window_start
+    end price   = last trading close ON OR BEFORE window_end
+
+For the typical Monday-to-Sunday window that is prior-Friday close to
+Friday close, a full 5 trading days. Using the window_start close instead
+would silently drop Monday, the first day of issuance, from the measured
+return. It also leaves a Friday-to-Monday hole between consecutive weeks,
+which breaks the lead-lag analysis downstream.
+
+Endpoint matching
+-----------------
+MSTR and BTC returns are computed over the SAME two calendar dates (the MSTR
+trading days above), not over the raw window boundaries. BTC trades on
+weekends and MSTR does not; pairing a Sunday BTC close against a Friday MSTR
+close injects two days of unhedged BTC move into every observation and
+suppresses the BTC-beta fit. The actual dates used are written to the output
+as px_start_date / px_end_date.
+
+Returns: (close_end - close_start) / close_start  (arithmetic, not log)
 
 Output: data/weekly.csv
 """
@@ -31,6 +51,9 @@ OUT_PATH   = DATA_DIR / "weekly.csv"
 WINDOW_MIN_DAYS = 5
 WINDOW_MAX_DAYS = 10
 
+# How far back to walk when looking for a trading day.
+MAX_LOOKBACK_DAYS = 7
+
 
 # ---------------------------------------------------------------------------
 # Price lookup helpers
@@ -43,36 +66,24 @@ def _build_lookup(prices: pd.DataFrame, ticker: str) -> dict:
     return dict(zip(sub["date"], sub["close"]))
 
 
-def _nearest_prior(px_map: dict, target: date, max_lookback: int = 5) -> tuple[float, bool]:
-    """
-    Return (close, holiday_substituted).
-
-    Sunday/Saturday -> Friday is routine for these filings (window ends are
-    disclosed through Sunday). That case is NOT flagged (substituted=False).
-    Only flag when the nearest prior trading day is further back than the
-    weekend itself -- i.e., the Friday before was also a market holiday.
-    """
-    if target in px_map:
-        return px_map[target], False
-
-    # Walk back to find the actual trading day used
-    d = target - timedelta(days=1)
-    for _ in range(max_lookback):
+def _trading_day_on_or_before(px_map: dict, target: date) -> date:
+    """Latest date in px_map that is <= target."""
+    d = target
+    for _ in range(MAX_LOOKBACK_DAYS + 1):
         if d in px_map:
-            # Routine weekend: target was Sat/Sun and we landed on Friday
-            if target.weekday() in (5, 6) and (target - d).days <= 2:
-                return px_map[d], False
-            # Otherwise: a weekday or a longer-than-2-day gap -- genuine holiday
-            return px_map[d], True
+            return d
         d -= timedelta(days=1)
-    raise KeyError(f"No price within {max_lookback} days before {target}")
+    raise KeyError(f"No trading day within {MAX_LOOKBACK_DAYS} days on or before {target}")
 
 
-def _exact(px_map: dict, target: date) -> float:
-    """Return exact close; raise KeyError with informative message if missing."""
-    if target not in px_map:
-        raise KeyError(f"No price for {target}")
-    return px_map[target]
+def _trading_day_before(px_map: dict, target: date) -> date:
+    """Latest date in px_map that is strictly < target."""
+    return _trading_day_on_or_before(px_map, target - timedelta(days=1))
+
+
+def _is_routine_weekend(window_boundary: date, used: date) -> bool:
+    """True when the only reason we moved back was Sat/Sun, not a holiday."""
+    return window_boundary.weekday() in (5, 6) and (window_boundary - used).days <= 2
 
 
 # ---------------------------------------------------------------------------
@@ -94,7 +105,7 @@ def main():
 
     # -- Process each filing row ---------------------------------------------
     records = []
-    n_subst = 0       # MSTR weekend/holiday substitutions
+    n_subst = 0       # MSTR holiday substitutions (weekends are routine, not flagged)
     n_short_long = 0  # windows outside [WINDOW_MIN_DAYS, WINDOW_MAX_DAYS]
     n_skipped = 0
 
@@ -109,32 +120,45 @@ def main():
 
         window_days = (we - ws).days
 
-        # MSTR: nearest-prior fallback on non-trading days
+        # Endpoint dates: the close before the window opens, and the close at
+        # the window's end. Both are MSTR trading days.
         try:
-            mstr_start, sub_s = _nearest_prior(mstr_px, ws)
-            mstr_end,   sub_e = _nearest_prior(mstr_px, we)
+            px_start_date = _trading_day_before(mstr_px, ws)
+            px_end_date   = _trading_day_on_or_before(mstr_px, we)
         except KeyError as e:
             print(f"[SKIP row {idx}] MSTR price missing: {e}", file=sys.stderr)
             n_skipped += 1
             continue
 
-        # BTC: exact lookups only
-        try:
-            btc_start = _exact(btc_px, ws)
-            btc_end   = _exact(btc_px, we)
-        except KeyError as e:
-            print(f"[SKIP row {idx}] BTC price missing: {e}", file=sys.stderr)
+        if px_end_date <= px_start_date:
+            print(f"[SKIP row {idx}] {ws}--{we}: degenerate window, endpoints "
+                  f"resolve to {px_start_date} and {px_end_date}", file=sys.stderr)
             n_skipped += 1
             continue
 
-        mstr_return = (mstr_end - mstr_start) / mstr_start
-        btc_return  = (btc_end  - btc_start)  / btc_start
+        # BTC at the SAME dates, so both legs span an identical interval.
+        if px_start_date not in btc_px or px_end_date not in btc_px:
+            print(f"[SKIP row {idx}] BTC price missing for "
+                  f"{px_start_date} or {px_end_date}", file=sys.stderr)
+            n_skipped += 1
+            continue
 
-        subst_flag = sub_s or sub_e
+        mstr_return = (mstr_px[px_end_date] - mstr_px[px_start_date]) / mstr_px[px_start_date]
+        btc_return  = (btc_px[px_end_date]  - btc_px[px_start_date])  / btc_px[px_start_date]
+
+        # Trading days spanned, exclusive of the start close. Normally 5.
+        trading_days = sum(
+            1 for d in mstr_px
+            if px_start_date < d <= px_end_date
+        )
+
+        # Flag only genuine holiday substitutions at the window end. Walking a
+        # Sunday window_end back to Friday is how these filings always look.
+        subst_flag = (px_end_date != we) and not _is_routine_weekend(we, px_end_date)
         if subst_flag:
             n_subst += 1
-            print(f"  [SUBST] {ws}--{we}: MSTR date substituted "
-                  f"(start_ok={not sub_s}, end_ok={not sub_e})", file=sys.stderr)
+            print(f"  [SUBST] {ws}--{we}: window_end {we} resolved to "
+                  f"{px_end_date} (market holiday)", file=sys.stderr)
 
         nonstandard_flag = window_days < WINDOW_MIN_DAYS or window_days > WINDOW_MAX_DAYS
         if nonstandard_flag:
@@ -144,6 +168,9 @@ def main():
             "window_start":      ws,
             "window_end":        we,
             "window_days":       window_days,
+            "px_start_date":     px_start_date,
+            "px_end_date":       px_end_date,
+            "trading_days":      trading_days,
             "mstr_return":       round(mstr_return, 6),
             "btc_return":        round(btc_return, 6),
             "shares_sold":       int(row["shares_sold"]),
@@ -164,8 +191,22 @@ def main():
     print(f"\nWrote {len(out)} rows to {OUT_PATH}")
     print(f"Date range:  {out['window_start'].min()}  to  {out['window_end'].max()}")
     print(f"Skipped:     {n_skipped} rows (price data missing)")
-    print(f"Price subst: {n_subst} rows (MSTR weekend/holiday boundary)")
+    print(f"Holiday subst: {n_subst} rows (window_end fell on a market holiday)")
     print(f"Non-std windows (<{WINDOW_MIN_DAYS}d or >{WINDOW_MAX_DAYS}d): {n_short_long}")
+
+    # Contiguity check: with correct alignment, one week's end close is the
+    # next week's start close. Breaks here mean a missing filing.
+    std = out[~out["nonstandard_window"]].reset_index(drop=True)
+    contiguous = sum(
+        std["px_end_date"].iloc[i] == std["px_start_date"].iloc[i + 1]
+        for i in range(len(std) - 1)
+    )
+    print(f"Contiguous week pairs: {contiguous}/{max(len(std) - 1, 0)} "
+          f"(breaks correspond to missing filings)")
+
+    td = out[~out["nonstandard_window"]]["trading_days"]
+    print(f"Trading days per standard window: "
+          f"median={td.median():.0f}  min={td.min()}  max={td.max()}")
 
     if n_short_long:
         print("\nNon-standard windows:")
