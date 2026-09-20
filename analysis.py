@@ -40,14 +40,29 @@ MAD_K = 3.0  # outlier threshold: k * MAD from median
 # Helpers
 # ---------------------------------------------------------------------------
 
-def _ols(y: np.ndarray, X: np.ndarray, label: str) -> tuple[np.ndarray, float]:
+def _ols(y: np.ndarray, X: np.ndarray, label: str,
+         as_pct: bool = True) -> tuple[np.ndarray, float]:
+    """
+    Fit y ~ const + X and print it.
+
+    as_pct=True renders coefficients as percentage points, which is what you
+    want when X is issuance in $B (slope reads as "% abnormal return per $1B").
+    Set as_pct=False for a unitless regressor such as the BTC return, where
+    the slope is a beta and a percent sign would be wrong.
+    """
     Xc = sm.add_constant(X)
     model = sm.OLS(y, Xc).fit()
     names = ["const"] + (["slope"] if X.ndim == 1 else [f"x{i}" for i in range(X.shape[1])])
-    coef_str = "  ".join(
-        f"{n}={model.params[i]:.4f} (p={model.pvalues[i]:.3f})"
-        for i, n in enumerate(names)
-    )
+    if as_pct:
+        coef_str = "  ".join(
+            f"{n}={model.params[i]*100:+.3f}% (p={model.pvalues[i]:.3f})"
+            for i, n in enumerate(names)
+        )
+    else:
+        coef_str = "  ".join(
+            f"{n}={model.params[i]:+.4f} (p={model.pvalues[i]:.3f})"
+            for i, n in enumerate(names)
+        )
     print(f"  {label}: R^2={model.rsquared:.4f}  n={int(model.nobs)}  {coef_str}")
     return model.resid, model.rsquared
 
@@ -64,7 +79,7 @@ def _joint_ols(y: np.ndarray, btc: np.ndarray, iss: np.ndarray, label: str):
     m = sm.OLS(y, X).fit()
     print(f"  {label}: R^2={m.rsquared:.4f}  n={int(m.nobs)}")
     print(f"    btc_beta      = {m.params[1]:+.4f}  (p={m.pvalues[1]:.3f})")
-    print(f"    issuance slope= {m.params[2]*1e9*100:+.3f}% per $1B  "
+    print(f"    issuance slope= {m.params[2]*100:+.3f}% per $1B  "
           f"(t={m.tvalues[2]:+.2f}, p={m.pvalues[2]:.3f})")
     return m
 
@@ -103,7 +118,8 @@ def main():
 
     mstr_ret = df["mstr_return"].values
     btc_ret  = df["btc_return"].values
-    issuance = df["net_proceeds_usd"].values
+    # Issuance in $B, so every slope below reads directly as "return per $1B".
+    issuance = df["net_proceeds_usd"].values / 1e9
     n = len(df)
 
     # -----------------------------------------------------------------------
@@ -111,7 +127,7 @@ def main():
     # -----------------------------------------------------------------------
     _section("a. BTC-beta regression (MSTR ~ BTC)")
     print(f"  n = {n} weeks (incl. zero-issuance weeks)")
-    _, r2_btc = _ols(mstr_ret, btc_ret, "MSTR ~ BTC")
+    _, r2_btc = _ols(mstr_ret, btc_ret, "MSTR ~ BTC", as_pct=False)
     resid_all = sm.OLS(mstr_ret, sm.add_constant(btc_ret)).fit().resid
     df["abnormal_return"] = resid_all
 
@@ -134,7 +150,7 @@ def main():
     atten = (1 - slope_two / slope_joint) * 100 if slope_joint else float("nan")
     print(f"    corr(issuance, btc_return) = {corr_bi:+.3f}, so the two-stage slope")
     print(f"    is attenuated by {atten:.0f}% relative to the joint estimate")
-    print(f"    ({slope_two*1e9*100:+.3f}% vs {slope_joint*1e9*100:+.3f}% per $1B).")
+    print(f"    ({slope_two*100:+.3f}% vs {slope_joint*100:+.3f}% per $1B).")
 
     print(f"\n  Original post reported R^2 ~0.49. Ours is {r2_base:.4f}.")
     print(f"  An R^2 of 0.49 would be a STRONG relationship, not a dead one, so the")
@@ -165,26 +181,56 @@ def main():
     _spearman(issuance[nz_mask], abnormal[nz_mask], "non-zero issuance only")
 
     # -----------------------------------------------------------------------
-    # d. MAD outlier flagging + re-run
+    # d. Robustness to the lumpy issuance distribution
     # -----------------------------------------------------------------------
-    _section(f"d. MAD outlier flagging (k={MAD_K}) on issuance $")
-    outlier_mask = _mad_outlier_mask(issuance, MAD_K)
-    n_outliers = outlier_mask.sum()
-    if n_outliers:
-        out_rows = df[outlier_mask][["window_start", "window_end", "net_proceeds_usd", "shares_sold"]]
-        print(f"  {n_outliers} outlier weeks (>{MAD_K}*MAD from median):")
-        for _, r in out_rows.iterrows():
-            print(f"    {r['window_start']} to {r['window_end']}  "
-                  f"${r['net_proceeds_usd']/1e9:.2f}B  {r['shares_sold']:,} shares")
-    else:
-        print(f"  No outliers at k={MAD_K}.")
+    _section("d. Robustness to lumpy issuance")
+    print("  Issuance is heavily right-skewed with a large mass at zero, so the")
+    print("  concern is real. But DELETING the large weeks is not the answer: it")
+    print("  removes the variation the regression is trying to price. Quantified")
+    print("  first, then handled properly by downweighting instead.")
 
-    clean = ~outlier_mask
-    n_clean = clean.sum()
-    print(f"\n  Re-run excluding {n_outliers} outliers (n={n_clean}):")
-    _, r2_clean = _ols(abnormal[clean], issuance[clean],
-                       "abnormal ~ issuance (excl. MAD outliers)")
-    _spearman(issuance[clean], abnormal[clean], "issuance vs abnormal (excl. MAD outliers)")
+    # -- What MAD deletion would actually discard (diagnostic only) ----------
+    outlier_mask = _mad_outlier_mask(issuance, MAD_K)
+    n_outliers = int(outlier_mask.sum())
+    med = np.median(issuance)
+    mad = np.median(np.abs(issuance - med))
+    kept_dollars = issuance[~outlier_mask].sum() / issuance.sum()
+    print(f"\n  [diagnostic] MAD rule at k={MAD_K}: median=${med:.3f}B, "
+          f"MAD=${mad:.3f}B, cutoff=${med + MAD_K*mad:.3f}B")
+    print(f"  [diagnostic] It flags {n_outliers}/{len(issuance)} weeks, leaving "
+          f"{int((~outlier_mask).sum())} rows that hold only "
+          f"{kept_dollars*100:.1f}% of total proceeds.")
+    print(f"  [diagnostic] Dropping them and finding no effect is circular: "
+          f"{(1-kept_dollars)*100:.0f}% of the")
+    print(f"               dollars being tested would be gone. Reported, not used.")
+    _, r2_clean = _ols(abnormal[~outlier_mask], issuance[~outlier_mask],
+                       "abnormal ~ issuance (MAD-deleted -- shown for contrast only)")
+
+    # -- Proper robustness: keep every row, reduce leverage ------------------
+    print(f"\n  Robust specifications, all {len(issuance)} rows retained:")
+
+    rlm = sm.RLM(abnormal, sm.add_constant(issuance),
+                 M=sm.robust.norms.HuberT()).fit()
+    slope_rlm = rlm.params[1]
+    print(f"    Huber M-estimator:   {slope_rlm*100:+.3f}% per $1B  "
+          f"(p={rlm.pvalues[1]:.3f})")
+
+    log_iss = np.log1p(issuance)
+    log_fit = sm.OLS(abnormal, sm.add_constant(log_iss)).fit()
+    print(f"    log1p(issuance $B):  {log_fit.params[1]*100:+.3f}% per unit  "
+          f"(p={log_fit.pvalues[1]:.3f}, R^2={log_fit.rsquared:.4f})")
+
+    wins = np.clip(issuance, None, np.quantile(issuance, 0.95))
+    win_fit = sm.OLS(abnormal, sm.add_constant(wins)).fit()
+    print(f"    winsorized at p95:   {win_fit.params[1]*100:+.3f}% per $1B  "
+          f"(p={win_fit.pvalues[1]:.3f}, R^2={win_fit.rsquared:.4f})")
+
+    print(f"\n    Spearman is itself rank-based, so it already handles the skew.")
+    print(f"    Its weak spot here is the {int((~nz_mask).sum())} tied zeros out of "
+          f"{len(issuance)}, which is why the")
+    print(f"    non-zero-only version below is the one to read:")
+    _spearman(issuance[nz_mask], abnormal[nz_mask],
+              "non-zero issuance weeks (no ties)")
 
     # -----------------------------------------------------------------------
     # e. Lead-lag
@@ -201,11 +247,14 @@ def main():
     df_s["days_since_prev"] = df_s["window_start"].diff().dt.days
     df_s["gap_before"] = df_s["days_since_prev"] > 14
 
-    def _lag_pair(lag: int) -> tuple[np.ndarray, np.ndarray]:
+    def _lag_pair(lag: int, nonzero_only: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """
         For each issuance row at index i, abnormal row is at index i+lag.
         lag=+1 => abnormal is the FOLLOWING week (issuance leads abnormal).
         lag=-1 => abnormal is the PRIOR week (abnormal leads issuance).
+
+        nonzero_only drops weeks with no issuance, which otherwise enter the
+        rank correlation as a large block of ties.
         """
         iss_v, abn_v = [], []
         for i in range(len(df_s)):
@@ -215,13 +264,11 @@ def main():
             lo, hi = min(i, j), max(i, j)
             if df_s.iloc[lo + 1 : hi + 1]["gap_before"].any():
                 continue
-            iss_v.append(df_s.iloc[i]["net_proceeds_usd"])
+            if nonzero_only and df_s.iloc[i]["net_proceeds_usd"] <= 0:
+                continue
+            iss_v.append(df_s.iloc[i]["net_proceeds_usd"] / 1e9)
             abn_v.append(df_s.iloc[j]["abnormal_return"])
         return np.array(iss_v), np.array(abn_v)
-
-    outlier_mask_s = _mad_outlier_mask(
-        df_s["net_proceeds_usd"].values, MAD_K
-    )
 
     for lag, desc in [
         (-1, "abnormal(t-1) -- prior-week return vs issuance [does abnormal predict next issuance?]"),
@@ -231,23 +278,9 @@ def main():
         print(f"\n  lag={lag:+d}  {desc}")
         iss_v, abn_v = _lag_pair(lag)
         _ols(abn_v, iss_v, f"  OLS")
-        _spearman(iss_v, abn_v, f"  Spearman")
-
-        # Robustness: re-run excluding MAD outlier issuance weeks
-        iss_v2, abn_v2 = [], []
-        for i in range(len(df_s)):
-            j = i + lag
-            if j < 0 or j >= len(df_s):
-                continue
-            lo, hi = min(i, j), max(i, j)
-            if df_s.iloc[lo + 1 : hi + 1]["gap_before"].any():
-                continue
-            if outlier_mask_s[i]:
-                continue
-            iss_v2.append(df_s.iloc[i]["net_proceeds_usd"])
-            abn_v2.append(df_s.iloc[j]["abnormal_return"])
-        iss_v2, abn_v2 = np.array(iss_v2), np.array(abn_v2)
-        _spearman(iss_v2, abn_v2, f"  Spearman (excl. MAD outliers, n={len(iss_v2)})")
+        _spearman(iss_v, abn_v, f"  Spearman (all weeks)")
+        iss_v2, abn_v2 = _lag_pair(lag, nonzero_only=True)
+        _spearman(iss_v2, abn_v2, f"  Spearman (non-zero issuance weeks)")
 
     # -----------------------------------------------------------------------
     # Data gap note
@@ -271,14 +304,16 @@ def main():
     print(f"  Weeks analyzed:               {n}")
     print(f"  Non-standard windows dropped: {n_dropped}")
     print(f"  Zero-issuance weeks:          {(~nz_mask).sum()}")
-    print(f"  MAD outliers (k={MAD_K}):        {n_outliers}")
+    print(f"  MAD-flagged weeks (k={MAD_K}):    {n_outliers}  (downweighted, not dropped)")
     print()
     print(f"  (a) BTC-beta R^2:                      {r2_btc:.4f}")
-    print(f"  (b) JOINT issuance slope:              {slope_joint*1e9*100:+.3f}% per $1B  (p={p_joint:.3f})")
+    print(f"  (b) JOINT issuance slope:              {slope_joint*100:+.3f}% per $1B  (p={p_joint:.3f})")
     print(f"      two-stage OLS R^2 (all weeks):     {r2_base:.4f}")
     print(f"      baseline OLS R^2 (non-zero only):  {r2_nz:.4f}")
     print(f"      directional accuracy (non-zero):   {dir_acc:.4f}  (coin-flip = 0.50)")
-    print(f"  (d) ex-outlier OLS R^2:                {r2_clean:.4f}")
+    print(f"  (d) Huber robust slope:                {slope_rlm*100:+.3f}% per $1B")
+    print(f"      MAD-deleted OLS R^2 (not used):    {r2_clean:.4f}  "
+          f"[discards {(1-kept_dollars)*100:.0f}% of proceeds]")
 
 
 if __name__ == "__main__":
