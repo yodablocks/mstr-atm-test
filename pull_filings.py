@@ -13,8 +13,8 @@ Usage:
 Output:
     data/atm_issuance_raw.csv
 
-EDGAR requires a real User-Agent with a contact email. Set yours below
-before running, or pass via EDGAR_USER_AGENT env var.
+EDGAR requires a real User-Agent with a contact email. Set EDGAR_USER_AGENT
+before running; there is no default and the script exits without it.
 """
 
 import csv
@@ -32,11 +32,26 @@ CIK = "0001050446"  # Strategy Inc / MicroStrategy
 SUBMISSIONS_URL = f"https://data.sec.gov/submissions/CIK{CIK}.json"
 ARCHIVE_BASE = f"https://www.sec.gov/Archives/edgar/data/{int(CIK)}"
 
-# EDGAR will reject requests without a real contact email in the User-Agent.
-USER_AGENT = os.environ.get(
-    "EDGAR_USER_AGENT",
-    "marc-research-project contact@example.com",  # <-- replace with your email
-)
+# SEC fair-access policy requires a real contact in the User-Agent. Sending a
+# placeholder is worse than failing: it gets the whole IP range throttled and
+# gives SEC no way to reach whoever is generating the traffic. So: no default.
+USER_AGENT = os.environ.get("EDGAR_USER_AGENT")
+
+
+def _require_user_agent() -> str:
+    """Checked before the first network call, not at import.
+
+    Exiting at import time would make this module impossible to import for
+    testing the parsers against saved HTML, which is exactly what you want to
+    do when a filing format changes.
+    """
+    if not USER_AGENT or "example.com" in USER_AGENT:
+        sys.exit(
+            "[ERROR] EDGAR_USER_AGENT is not set to a real contact.\n"
+            "        SEC requires a User-Agent identifying who is making the request.\n"
+            '        export EDGAR_USER_AGENT="Your Name your@email.com"'
+        )
+    return USER_AGENT
 
 OUTPUT_PATH = Path(__file__).parent / "data" / "atm_issuance_raw.csv"
 
@@ -330,8 +345,18 @@ WINDOW_RE_B = re.compile(
 # even when MSTR notional is blank ("--").
 _MSTR_ANCHOR_RE = re.compile(r"MSTR Stock.*?Common Stock", re.IGNORECASE)
 # A line that is purely a cell value: optional leading " | ", then either a
-# number (with optional $ and commas) or a dash placeholder.
-_CELL_VALUE_RE = re.compile(r"^\s*\|?\s*\$?\s*([\d,]+\.?\d*|---|--|—|-|0)\s*$")
+# number (with optional $ and commas) or a dash placeholder, optionally
+# followed by a footnote marker such as "(5)".
+#
+# The footnote suffix is not cosmetic. From the 2026-08-03 filing onward the
+# Net Proceeds cell renders as "$ 290.6 (5)". Without the marker allowed here
+# that cell fails to match, gets skipped, and the positional token collector
+# silently advances to the NEXT column, "Available for Issuance", which is
+# remaining ATM capacity in the tens of billions. That produced five weeks of
+# proceeds around $20B against a real figure near $290M.
+_CELL_VALUE_RE = re.compile(
+    r"^\s*\|?\s*\$?\s*([\d,]+\.?\d*|---|--|—|-|0)\s*(?:\(\d+\))?\s*$"
+)
 
 
 def _to_float_or_zero(raw: str) -> float:
@@ -403,6 +428,16 @@ def parse_format_b(text: str, source_url: str) -> list[dict]:
             file=sys.stderr,
         )
         return results
+
+    # The MSTR row carries four value columns: shares, notional, net proceeds,
+    # available for issuance. Seeing fewer means a cell failed to match and the
+    # positional read has shifted, which silently reads the wrong column.
+    if len(tokens) != 4:
+        print(
+            f"[format B column count] {source_url} :: got {len(tokens)} value "
+            f"cells {tokens!r}, expected 4. Positional read may be misaligned.",
+            file=sys.stderr,
+        )
 
     shares_raw, _notional_raw, proceeds_raw = tokens[0], tokens[1], tokens[2]
     shares = int(_to_float_or_zero(shares_raw))
@@ -616,6 +651,7 @@ def parse_atm_text(text: str, source_url: str, filed_at: str) -> list[dict]:
 
 
 def main():
+    _require_user_agent()
     print(f"Fetching filing list for CIK {CIK} ...")
     try:
         submissions = fetch_json(SUBMISSIONS_URL)

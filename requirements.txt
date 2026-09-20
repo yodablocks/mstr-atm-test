@@ -1,0 +1,8 @@
+# Versions this analysis was last run and verified against.
+# Lower bounds rather than pins: nothing here uses a recent-only API, but
+# pandas 2.x changes date handling in build_dataset.py in ways not tested.
+pandas>=2.2,<4
+numpy>=1.26,<3
+scipy>=1.11
+statsmodels>=0.14
+yfinance>=0.2
