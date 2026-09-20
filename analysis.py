@@ -33,7 +33,14 @@ import statsmodels.api as sm
 
 WEEKLY_PATH = Path("data/weekly.csv")
 
-MAD_K = 3.0  # outlier threshold: k * MAD from median
+MAD_K = 3.0  # outlier threshold: k * MAD from median (diagnostic only, see section d)
+
+# Hypothesis tests reported below, counted by section:
+#   a: 1   b: 4   c: 2   d: 5   e: 9  (3 lags x {OLS, 2 Spearman})
+N_TESTS = 21
+
+ALPHA = 0.05   # two-sided significance level for power calculations
+POWER = 0.80   # conventional target power
 
 
 # ---------------------------------------------------------------------------
@@ -82,6 +89,15 @@ def _joint_ols(y: np.ndarray, btc: np.ndarray, iss: np.ndarray, label: str):
     print(f"    issuance slope= {m.params[2]*100:+.3f}% per $1B  "
           f"(t={m.tvalues[2]:+.2f}, p={m.pvalues[2]:.3f})")
     return m
+
+
+def _mde(se: float, alpha: float = ALPHA, power: float = POWER) -> float:
+    """
+    Minimum detectable effect: the smallest true slope this design would
+    reject zero for, at the given power. Approximately 2.80 * se for the
+    conventional alpha=0.05, power=0.80.
+    """
+    return (stats.norm.ppf(1 - alpha / 2) + stats.norm.ppf(power)) * se
 
 
 def _spearman(x: np.ndarray, y: np.ndarray, label: str) -> float:
@@ -142,6 +158,8 @@ def main():
     joint = _joint_ols(mstr_ret, btc_ret, issuance, "MSTR ~ BTC + issuance")
     slope_joint = joint.params[2]
     p_joint = joint.pvalues[2]
+    ci_joint = joint.conf_int()[2]
+    print(f"    95% CI          = [{ci_joint[0]*100:+.3f}%, {ci_joint[1]*100:+.3f}%] per $1B")
 
     print("\n  Two-stage version (what the original design implies), for comparison:")
     _, r2_base = _ols(abnormal, issuance, "abnormal ~ issuance (all weeks)")
@@ -283,6 +301,47 @@ def main():
         _spearman(iss_v2, abn_v2, f"  Spearman (non-zero issuance weeks)")
 
     # -----------------------------------------------------------------------
+    # f. Power: what this design can and cannot detect
+    # -----------------------------------------------------------------------
+    _section("f. Power -- what a null result here does and does not mean")
+
+    se_joint = joint.bse[2]
+    mde = _mde(se_joint)
+    resid_sd = abnormal.std(ddof=1)
+
+    print(f"  Residual (abnormal return) SD: {resid_sd*100:.2f}% per week")
+    print(f"  Issuance SD:                   ${issuance.std(ddof=1):.3f}B per week")
+    print(f"  SE of the issuance slope:      {se_joint*100:.3f}% per $1B")
+    print()
+    print(f"  Minimum detectable effect (alpha={ALPHA}, power={POWER:.0%}):")
+    print(f"    |slope| >= {mde*100:.2f}% abnormal return per $1B")
+    print()
+    print(f"  Point estimate {slope_joint*100:+.3f}% per $1B, 95% CI "
+          f"[{ci_joint[0]*100:+.3f}%, {ci_joint[1]*100:+.3f}%].")
+    print(f"  So the sample RULES OUT a price impact larger than about "
+          f"{max(abs(ci_joint[0]), abs(ci_joint[1]))*100:.1f}% per $1B,")
+    print(f"  and says nothing either way about anything smaller. With n={n} weeks")
+    print(f"  and weekly residual noise of {resid_sd*100:.1f}%, a true effect anywhere")
+    print(f"  below {mde*100:.1f}% per $1B would fail to reject zero most of the time,")
+    print(f"  so a null result here is the expected outcome under a wide range of")
+    print(f"  real, economically meaningful impacts, not just under no impact at all.")
+    print()
+    print(f"  'No detectable relationship' is therefore the correct reading.")
+    print(f"  'No relationship' is not supported by these data.")
+
+    # -----------------------------------------------------------------------
+    # Multiple comparisons
+    # -----------------------------------------------------------------------
+    _section("Multiple comparisons")
+    print(f"  This script reports roughly {N_TESTS} hypothesis tests on one dataset.")
+    print(f"  At alpha=0.05 the expected number of spurious rejections is "
+          f"{N_TESTS * 0.05:.1f}.")
+    print(f"  Bonferroni-adjusted threshold: p < {0.05 / N_TESTS:.4f}.")
+    print(f"  Nothing reported above clears that, and nothing reported above")
+    print(f"  clears an unadjusted 0.05 either. Treat any single p near 0.10 as")
+    print(f"  noise unless it survives a pre-registered re-test on new weeks.")
+
+    # -----------------------------------------------------------------------
     # Data gap note
     # -----------------------------------------------------------------------
     _section("Data coverage note")
@@ -311,6 +370,9 @@ def main():
     print(f"      two-stage OLS R^2 (all weeks):     {r2_base:.4f}")
     print(f"      baseline OLS R^2 (non-zero only):  {r2_nz:.4f}")
     print(f"      directional accuracy (non-zero):   {dir_acc:.4f}  (coin-flip = 0.50)")
+    print(f"      95% CI:                            "
+          f"[{ci_joint[0]*100:+.3f}%, {ci_joint[1]*100:+.3f}%] per $1B")
+    print(f"      min detectable effect (80% power): {mde*100:.2f}% per $1B")
     print(f"  (d) Huber robust slope:                {slope_rlm*100:+.3f}% per $1B")
     print(f"      MAD-deleted OLS R^2 (not used):    {r2_clean:.4f}  "
           f"[discards {(1-kept_dollars)*100:.0f}% of proceeds]")
