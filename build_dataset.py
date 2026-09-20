@@ -54,6 +54,15 @@ WINDOW_MAX_DAYS = 10
 # How far back to walk when looking for a trading day.
 MAX_LOOKBACK_DAYS = 7
 
+# Implied share price (net_proceeds / shares_sold) is checked against the
+# MSTR close over the same window. ATM sales are executed at prevailing market
+# prices, so the ratio should sit near 1.0; net proceeds are after commission,
+# and the window spans a few days of price movement, hence the tolerance.
+# A ratio far outside this band means the filing parse read the wrong column,
+# not that Strategy sold at an exotic price.
+IMPLIED_PX_MIN_RATIO = 0.70
+IMPLIED_PX_MAX_RATIO = 1.40
+
 
 # ---------------------------------------------------------------------------
 # Price lookup helpers
@@ -84,6 +93,24 @@ def _trading_day_before(px_map: dict, target: date) -> date:
 def _is_routine_weekend(window_boundary: date, used: date) -> bool:
     """True when the only reason we moved back was Sat/Sun, not a holiday."""
     return window_boundary.weekday() in (5, 6) and (window_boundary - used).days <= 2
+
+
+def _implied_price_ratio(proceeds: float, shares: int,
+                         px_start: float, px_end: float) -> float | None:
+    """
+    net_proceeds/shares, divided by the average MSTR close over the window.
+
+    Returns None for zero-issuance weeks, where the ratio is undefined.
+
+    This is the cheapest available check that the issuance figures were read
+    out of the right column. The ATM sells common stock into the open market,
+    so proceeds per share must track the market price. When the parser once
+    picked up "Available for Issuance" instead of "Net Proceeds" this ratio
+    hit 76x and nothing downstream noticed.
+    """
+    if shares <= 0 or proceeds <= 0:
+        return None
+    return (proceeds / shares) / ((px_start + px_end) / 2)
 
 
 # ---------------------------------------------------------------------------
@@ -146,6 +173,11 @@ def main():
         mstr_return = (mstr_px[px_end_date] - mstr_px[px_start_date]) / mstr_px[px_start_date]
         btc_return  = (btc_px[px_end_date]  - btc_px[px_start_date])  / btc_px[px_start_date]
 
+        implied_ratio = _implied_price_ratio(
+            float(row["net_proceeds_usd"]), int(row["shares_sold"]),
+            mstr_px[px_start_date], mstr_px[px_end_date],
+        )
+
         # Trading days spanned, exclusive of the start close. Normally 5.
         trading_days = sum(
             1 for d in mstr_px
@@ -176,6 +208,7 @@ def main():
             "shares_sold":       int(row["shares_sold"]),
             "net_proceeds_usd":  float(row["net_proceeds_usd"]),
             "format":            row["format"],
+            "implied_px_ratio":  round(implied_ratio, 4) if implied_ratio else None,
             "price_subst_flag":  subst_flag,
             "nonstandard_window": nonstandard_flag,
         })
@@ -184,6 +217,27 @@ def main():
         sys.exit("[ERROR] No rows built -- check date parsing and price coverage.")
 
     out = pd.DataFrame(records).sort_values("window_start").reset_index(drop=True)
+
+    # -- Validate before writing ---------------------------------------------
+    ratios = out["implied_px_ratio"]
+    suspect = out[
+        ratios.notna()
+        & ((ratios < IMPLIED_PX_MIN_RATIO) | (ratios > IMPLIED_PX_MAX_RATIO))
+    ]
+    if not suspect.empty:
+        print(f"\n[ERROR] {len(suspect)} row(s) have an implied share price outside "
+              f"[{IMPLIED_PX_MIN_RATIO}, {IMPLIED_PX_MAX_RATIO}]x the market close.",
+              file=sys.stderr)
+        print("        This is the signature of a filing parse reading the wrong "
+              "column.", file=sys.stderr)
+        for _, r in suspect.iterrows():
+            implied = r["net_proceeds_usd"] / r["shares_sold"]
+            print(f"          {r['window_start']} to {r['window_end']}: "
+                  f"${r['net_proceeds_usd']/1e6:,.1f}M / {r['shares_sold']:,} shares "
+                  f"= ${implied:,.2f}/share, ratio {r['implied_px_ratio']:.2f}x",
+                  file=sys.stderr)
+        sys.exit("[ERROR] Refusing to write weekly.csv. Fix the parser first.")
+
     out.to_csv(OUT_PATH, index=False)
 
     # -- Summary -------------------------------------------------------------
@@ -203,6 +257,11 @@ def main():
     )
     print(f"Contiguous week pairs: {contiguous}/{max(len(std) - 1, 0)} "
           f"(breaks correspond to missing filings)")
+
+    ok_ratios = out["implied_px_ratio"].dropna()
+    print(f"Implied price check: {len(ok_ratios)} issuance weeks, ratio to market "
+          f"median={ok_ratios.median():.3f}  min={ok_ratios.min():.3f}  "
+          f"max={ok_ratios.max():.3f}")
 
     td = out[~out["nonstandard_window"]]["trading_days"]
     print(f"Trading days per standard window: "
