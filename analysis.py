@@ -47,6 +47,9 @@ MAD_K = 3.0  # outlier threshold: k * MAD from median (diagnostic only, see sect
 # test of the issuance question, and it is significant at any threshold.
 N_TESTS = 20
 
+# Disclosed windows start 7 days apart. Beyond this, a week is missing.
+MAX_WEEK_SPACING_DAYS = 8
+
 ALPHA = 0.05   # two-sided significance level for power calculations
 POWER = 0.80   # conventional target power
 
@@ -266,12 +269,18 @@ def main():
     print("  lag=-1: abnormal(t-1) -- prior-week return vs this week's issuance")
     print("  lag= 0: abnormal(t)   -- contemporaneous")
     print("  lag=+1: abnormal(t+1) -- does issuance predict next-week abnormal return?")
-    print("  [pairs straddling the Apr-Oct 2025 Format C gap are excluded]")
+    print(f"  [pairs straddling a missing week (>{MAX_WEEK_SPACING_DAYS}d between "
+          f"window starts) are excluded]")
 
     df_s = df.sort_values("window_start").reset_index(drop=True)
     df_s["window_start"] = pd.to_datetime(df_s["window_start"])
     df_s["days_since_prev"] = df_s["window_start"].diff().dt.days
-    df_s["gap_before"] = df_s["days_since_prev"] > 14
+    # Consecutive disclosed windows start 7 days apart. Anything beyond 8 means
+    # at least one week is missing, so rows adjacent in the frame are not
+    # adjacent in time and must not be paired as lag 1. The previous threshold
+    # of 14 only caught gaps of two or more missing weeks, silently treating a
+    # single missing week as contiguous.
+    df_s["gap_before"] = df_s["days_since_prev"] > MAX_WEEK_SPACING_DAYS
 
     def _lag_pair(lag: int, nonzero_only: bool = False) -> tuple[np.ndarray, np.ndarray]:
         """
@@ -359,16 +368,28 @@ def main():
     # Data gap note
     # -----------------------------------------------------------------------
     _section("Data coverage note")
-    n_pre  = (df_s["window_start"] < "2025-04-01").sum()
-    n_gap  = ((df_s["window_start"] >= "2025-04-01") & (df_s["window_start"] < "2025-11-01")).sum()
-    n_post = (df_s["window_start"] >= "2025-11-01").sum()
-    print(f"  Our dataset: {n} weeks total.")
-    print(f"    Nov 2024 - Mar 2025:  {n_pre} weeks")
-    print(f"    Apr 2025 - Oct 2025:  {n_gap} weeks (Format C, now parsed -- 2 weeks still missing)")
-    print(f"    Nov 2025 - Jun 2026:  {n_post} weeks")
-    print(f"  Remaining gaps: May 19-25 2025 and Oct 6-12 2025 (1 week each, filings not found).")
-    print(f"  The R^2 gap vs the original 0.49 is not explained by missing data:")
-    print(f"  the Apr-Oct 2025 period is now covered and the relationship remains flat.")
+    first, last = df_s["window_start"].min(), df_s["window_start"].max()
+    span_weeks = int((last - first).days / 7) + 1
+    print(f"  {n} weeks analyzed, {first.date()} to "
+          f"{pd.to_datetime(df_s['window_end'].max()).date()}.")
+    print(f"  That span is {span_weeks} calendar weeks, so "
+          f"{span_weeks - n} weekly filings are missing.")
+
+    breaks = df_s[df_s["gap_before"]]
+    if len(breaks):
+        print(f"\n  {len(breaks)} break(s) in the weekly sequence:")
+        for _, r in breaks.iterrows():
+            missing = int(r["days_since_prev"] / 7) - 1
+            prev_end = df_s.loc[df_s["window_start"] < r["window_start"],
+                                "window_end"].max()
+            print(f"    {missing} week(s) missing between {prev_end} and "
+                  f"{r['window_start'].date()}")
+    else:
+        print("  No breaks in the weekly sequence.")
+
+    print(f"\n  Missing weeks are filings this parser did not locate or could not")
+    print(f"  read, not weeks Strategy failed to disclose. They are dropped rather")
+    print(f"  than interpolated, and lead-lag pairs across them are excluded.")
 
     # -----------------------------------------------------------------------
     # Summary
