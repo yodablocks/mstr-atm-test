@@ -138,6 +138,9 @@ def main():
 
     # Drop non-standard windows (1-2 day year-end stubs)
     n_orig = len(weekly)
+    dropped_starts = set(
+        pd.to_datetime(weekly.loc[weekly["nonstandard_window"], "window_start"]).dt.date
+    )
     df = weekly[~weekly["nonstandard_window"]].copy().reset_index(drop=True)
     n_dropped = n_orig - len(df)
     if n_dropped:
@@ -350,6 +353,19 @@ def main():
     print(f"  'No detectable relationship' is therefore the correct reading.")
     print(f"  'No relationship' is not supported by these data.")
 
+    # MDE shrinks as 1/sqrt(n), so the weeks needed to reach a target scale
+    # with the square of the improvement factor.
+    print()
+    print(f"  Weeks of data needed to reach a given MDE, holding this residual")
+    print(f"  volatility fixed (MDE scales as 1/sqrt(n)):")
+    for target in (2.0, 1.0, 0.5):
+        need = int(np.ceil(n * (mde * 100 / target) ** 2))
+        print(f"    MDE {target:.1f}% per $1B:  {need:,} weeks "
+              f"(~{need / 52:.0f} years, {need - n:,} more than now)")
+    print(f"  Strategy has disclosed weekly for under two years. Reaching a")
+    print(f"  resolution that would matter is a decade-scale wait, so the answer")
+    print(f"  is a better design, not a longer sample.")
+
     # -----------------------------------------------------------------------
     # Multiple comparisons
     # -----------------------------------------------------------------------
@@ -376,20 +392,34 @@ def main():
           f"{span_weeks - n} weekly filings are missing.")
 
     breaks = df_s[df_s["gap_before"]]
+    n_stub = n_unlocated = 0
     if len(breaks):
         print(f"\n  {len(breaks)} break(s) in the weekly sequence:")
         for _, r in breaks.iterrows():
             missing = int(r["days_since_prev"] / 7) - 1
             prev_end = df_s.loc[df_s["window_start"] < r["window_start"],
                                 "window_end"].max()
-            print(f"    {missing} week(s) missing between {prev_end} and "
-                  f"{r['window_start'].date()}")
+            # A break is explained if a non-standard window we dropped starts
+            # inside it. Those filings exist and were parsed; we excluded them.
+            lo = pd.to_datetime(prev_end).date()
+            hi = r["window_start"].date()
+            stub = any(lo < d < hi for d in dropped_starts)
+            if stub:
+                n_stub += missing
+                cause = "stub window dropped as non-standard (filing exists)"
+            else:
+                n_unlocated += missing
+                cause = "filing not located by this parser"
+            print(f"    {missing} week(s) between {prev_end} and {hi}: {cause}")
     else:
         print("  No breaks in the weekly sequence.")
 
-    print(f"\n  Missing weeks are filings this parser did not locate or could not")
-    print(f"  read, not weeks Strategy failed to disclose. They are dropped rather")
-    print(f"  than interpolated, and lead-lag pairs across them are excluded.")
+    print(f"\n  Of {n_stub + n_unlocated} missing weeks, {n_stub} are quarter- and year-end "
+          f"stub windows this")
+    print(f"  script drops by design, and {n_unlocated} are filings the parser did not")
+    print(f"  locate. Neither is a week Strategy failed to disclose. Missing weeks")
+    print(f"  are dropped rather than interpolated, and lead-lag pairs across them")
+    print(f"  are excluded.")
 
     # -----------------------------------------------------------------------
     # Summary

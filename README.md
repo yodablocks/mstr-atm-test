@@ -45,16 +45,20 @@ cannot distinguish it from nothing.
 Three passes over substantially the same question:
 
 ```
-  77 weeks, return window misaligned by one day   -1.01% per $1B
+  77 weeks, return window misaligned by one day   -1.16% per $1B
   77 weeks, window corrected                      +0.37% per $1B
   89 weeks, window corrected                      -0.70% per $1B
+  87 weeks, two volatile June weeks excluded      +0.34% per $1B
 ```
 
-Every one of these sits comfortably inside every other one's confidence
-interval. The sign of the headline estimate flips on a one-day alignment
-choice and flips back on a twelve-week sample extension. That is what an
-underpowered test looks like from the inside, and it is the strongest
-argument in this repo against reading any single point estimate as a result.
+All four are the joint estimator, so they are directly comparable.
+
+Every one sits comfortably inside every other one's confidence interval. The
+sign of the headline estimate flips on a one-day alignment choice, flips back
+on a twelve-week sample extension, and flips again on dropping two weeks out
+of eighty-nine. That is what an underpowered test looks like from the inside,
+and it is the strongest argument in this repo against reading any single
+point estimate as a result.
 
 ### More data made the test weaker
 
@@ -66,11 +70,28 @@ Extending the sample from 77 to 89 weeks did not improve power:
   minimum detectable    2.70%       3.04%
 ```
 
-The twelve added weeks are noisier than the average of the preceding
-seventy-seven, and residual volatility enters the minimum detectable effect
-faster than sample size reduces it. Collecting more weeks at this rate will
-not settle the question on any useful timescale. That is an argument for
-changing the design, not for waiting.
+This is not a misspecified hedge. BTC-beta is stable across the break: 1.373
+on the first 77 weeks, 1.387 on the new 12, 1.374 on all 89. A rolling beta
+would not recover the lost power.
+
+It is also not uniform. Two consecutive weeks in late June 2026 carry most of
+it, with residuals of -20.4% and +19.2%. Excluding those two, the remaining
+ten new weeks have a residual SD of 6.46% and the minimum detectable effect
+returns to 2.73%, essentially where it was.
+
+So the precise claim is narrower than "the market got noisier": a single
+volatile fortnight erased the power that twelve weeks of data bought. That is
+the durable problem. Power improves only as the square root of n, so at this
+residual volatility:
+
+```
+  to reach MDE 2.0% per $1B     206 weeks    (~4 years)
+  to reach MDE 1.0% per $1B     821 weeks    (~16 years)
+  to reach MDE 0.5% per $1B   3,283 weeks    (~63 years)
+```
+
+Strategy has disclosed weekly for under two years. Waiting is not a strategy
+for resolving this. A better design is.
 
 So "no detectable relationship" is correct. "No relationship" is not
 supported. A null result here is the expected outcome across a wide range of
@@ -82,7 +103,7 @@ real, economically meaningful impacts, not only under zero impact.
 
 Our replication of the second-stage regression gives R^2 = 0.0035, not 0.49.
 The gap is not explained by missing weeks: 7 of 96 calendar weeks in the span
-are absent, and the relationship stays flat with or without them.
+are absent, 3 of them by design, and the relationship stays flat regardless.
 
 Worth stating plainly: an R^2 of 0.49 would be a *strong* relationship, not a
 dead one. Roughly half the variance in abnormal returns explained by issuance
@@ -227,8 +248,10 @@ network access.
 - ATM window dates are not always calendar-week aligned. The filing's own
   disclosed window is used rather than snapping to ISO weeks. Three
   1-to-2-day year-end stubs are dropped, leaving 77 of 80 filings.
-- 7 of the 96 calendar weeks in the span are missing from the issuance
-  dataset, across 6 breaks. `analysis.py` lists them by date. They are
+- 7 of the 96 calendar weeks in the span are absent, across 6 breaks.
+  3 are quarter- and year-end stub windows dropped as non-standard, where the
+  filing exists and was parsed. 4 are filings this parser did not locate.
+  `analysis.py` lists all six breaks by date and cause. Missing weeks are
   dropped rather than interpolated, and lead-lag pairs across them are
   excluded.
 - Issuance is in raw dollars, not scaled by market cap or dollar volume.
